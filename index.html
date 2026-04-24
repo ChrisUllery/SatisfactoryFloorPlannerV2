@@ -13,7 +13,7 @@
     <aside id="sidebar">
       <header class="sidebar-header">
         <h1>Satisfactory Floor Planner V2</h1>
-        <p>Clean rebuild. No imported factory loaded yet.</p>
+        <p>Diagnostic-only phase for SFMD validation.</p>
       </header>
 
       <section class="panel">
@@ -23,10 +23,36 @@
 
       <section class="panel">
         <h2>Import</h2>
-        <input id="factoryFileInput" type="file" accept=".sfmd,.json" />
-        <button id="importFactoryBtn" type="button">Import Factory</button>
+
+        <!-- Primary IDs expected by the diagnostic app.js -->
+        <input id="importFactoryFile" type="file" accept=".sfmd,.json" />
+        <button id="runSfmdDiagnosticBtn" type="button">Run SFMD Diagnostic</button>
+
+        <!-- Optional legacy-compatible fallback IDs (hidden) -->
+        <!-- Keep if you want older code paths/tools to still find these IDs -->
+        <input
+          id="factoryFileInput"
+          type="file"
+          accept=".sfmd,.json"
+          style="display:none"
+          aria-hidden="true"
+          tabindex="-1"
+        />
+        <button
+          id="importFactoryBtn"
+          type="button"
+          style="display:none"
+          aria-hidden="true"
+          tabindex="-1"
+        >
+          Import Factory
+        </button>
+
+        <div id="sfmdDiagnosticSummary" class="diagnostic-summary"></div>
+        <pre id="sfmdDiagnosticOutput" class="diagnostic-output"></pre>
+
         <p class="hint">
-          Import handling will be added later. For now this just confirms the app is wired.
+          Diagnostic-only mode: upload an SFMD file, classify nodes, and review unknowns.
         </p>
       </section>
 
