@@ -1,195 +1,390 @@
-const canvas = document.getElementById("plannerCanvas");
-const ctx = canvas.getContext("2d");
+(() => {
+  "use strict";
 
-const newLayoutBtn = document.getElementById("newLayoutBtn");
-const fitViewBtn = document.getElementById("fitViewBtn");
-const importFactoryBtn = document.getElementById("importFactoryBtn");
-const factoryFileInput = document.getElementById("factoryFileInput");
-const statusText = document.getElementById("statusText");
+  // Diagnostic-only V2 skeleton:
+  // This file intentionally does NOT draw layout, run solver logic,
+  // import/place machines, or mutate planner state.
 
-const GRID_SIZE = 8;
+  const CATEGORY_RECIPE = "recognized recipe / production recipe";
+  const CATEGORY_MULTI = "recognized multi-machine/helper node";
+  const CATEGORY_MACHINE = "recognized non-layout machine";
+  const CATEGORY_SKIPPED = "skipped resource/extractor/source node";
+  const CATEGORY_UNKNOWN = "unknown/unrecognized node";
 
-const state = {
-  camera: {
-    x: 0,
-    y: 0,
-    zoom: 24
-  },
-  machines: [],
-  appReady: false
-};
+  const CATEGORIES = [
+    CATEGORY_RECIPE,
+    CATEGORY_MULTI,
+    CATEGORY_MACHINE,
+    CATEGORY_SKIPPED,
+    CATEGORY_UNKNOWN
+  ];
 
-function setStatus(message) {
-  statusText.textContent = message;
-}
+  const SOURCE_EXTRACTOR_NAMES = new Set([
+    "miner",
+    "miner mk.1",
+    "miner mk.2",
+    "miner mk.3",
+    "water extractor",
+    "oil extractor",
+    "resource well extractor"
+  ]);
 
-function resizeCanvas() {
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
+  const SOURCE_RESOURCE_NODE_NAMES = new Set([
+    "iron ore",
+    "limestone",
+    "copper ore",
+    "caterium ore",
+    "sulfur",
+    "raw quartz",
+    "sam",
+    "coal",
+    "bauxite",
+    "uranium",
+    "water",
+    "crude oil",
+    "well water",
+    "oil well",
+    "nitrogen gas"
+  ]);
 
-  canvas.width = Math.floor(rect.width * dpr);
-  canvas.height = Math.floor(rect.height * dpr);
+  let gameDataLookups = null;
 
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-  draw();
-}
-
-function worldToScreen(worldX, worldY) {
-  return {
-    x: worldX * state.camera.zoom + state.camera.x,
-    y: worldY * state.camera.zoom + state.camera.y
-  };
-}
-
-function screenToWorld(screenX, screenY) {
-  return {
-    x: (screenX - state.camera.x) / state.camera.zoom,
-    y: (screenY - state.camera.y) / state.camera.zoom
-  };
-}
-
-function centerCameraOnOrigin() {
-  const rect = canvas.getBoundingClientRect();
-
-  state.camera.x = rect.width / 2;
-  state.camera.y = rect.height / 2;
-  state.camera.zoom = 24;
-
-  draw();
-}
-
-function drawBackground() {
-  const rect = canvas.getBoundingClientRect();
-
-  ctx.fillStyle = "#080b10";
-  ctx.fillRect(0, 0, rect.width, rect.height);
-}
-
-function drawGrid() {
-  const rect = canvas.getBoundingClientRect();
-
-  const topLeft = screenToWorld(0, 0);
-  const bottomRight = screenToWorld(rect.width, rect.height);
-
-  const startX = Math.floor(topLeft.x / GRID_SIZE) * GRID_SIZE;
-  const endX = Math.ceil(bottomRight.x / GRID_SIZE) * GRID_SIZE;
-
-  const startY = Math.floor(topLeft.y / GRID_SIZE) * GRID_SIZE;
-  const endY = Math.ceil(bottomRight.y / GRID_SIZE) * GRID_SIZE;
-
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = "#1f2937";
-
-  for (let x = startX; x <= endX; x += GRID_SIZE) {
-    const screen = worldToScreen(x, 0);
-
-    ctx.beginPath();
-    ctx.moveTo(screen.x, 0);
-    ctx.lineTo(screen.x, rect.height);
-    ctx.stroke();
+  function byId(...ids) {
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (el) {
+        return el;
+      }
+    }
+    return null;
   }
 
-  for (let y = startY; y <= endY; y += GRID_SIZE) {
-    const screen = worldToScreen(0, y);
-
-    ctx.beginPath();
-    ctx.moveTo(0, screen.y);
-    ctx.lineTo(rect.width, screen.y);
-    ctx.stroke();
+  function escapeHtml(value) {
+    const str = String(value ?? "");
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
-}
 
-function drawOriginMarker() {
-  const origin = worldToScreen(0, 0);
+  function normalizeName(value) {
+    return String(value ?? "").trim().toLowerCase();
+  }
 
-  ctx.strokeStyle = "#f97316";
-  ctx.lineWidth = 2;
+  function buildLookupMap(items) {
+    const map = new Map();
+    if (!Array.isArray(items)) {
+      return map;
+    }
 
-  ctx.beginPath();
-  ctx.moveTo(origin.x - 12, origin.y);
-  ctx.lineTo(origin.x + 12, origin.y);
-  ctx.stroke();
+    for (const item of items) {
+      const key = normalizeName(item?.Name);
+      if (key) {
+        map.set(key, item);
+      }
+    }
 
-  ctx.beginPath();
-  ctx.moveTo(origin.x, origin.y - 12);
-  ctx.lineTo(origin.x, origin.y + 12);
-  ctx.stroke();
-}
+    return map;
+  }
 
-function drawEmptyStateMessage() {
-  const rect = canvas.getBoundingClientRect();
+  async function loadGameDataLookups() {
+    const response = await fetch("data/game_data.json");
+    if (!response.ok) {
+      throw new Error(`Failed to load data/game_data.json (HTTP ${response.status}).`);
+    }
 
-  ctx.fillStyle = "#9da7b3";
-  ctx.font = "16px Arial";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
+    const data = await response.json();
+    return {
+      recipesByName: buildLookupMap(data?.Recipes),
+      multiMachinesByName: buildLookupMap(data?.MultiMachines),
+      machinesByName: buildLookupMap(data?.Machines),
+      partsByName: buildLookupMap(data?.Parts)
+    };
+  }
 
-  ctx.fillText(
-    "Blank planner canvas — import and machine placement coming next.",
-    rect.width / 2,
-    40
-  );
+  function createEmptyDiagnostic() {
+    const counts = {};
+    const nodesByCategory = {};
 
-  ctx.textAlign = "start";
-  ctx.textBaseline = "alphabetic";
-}
+    for (const category of CATEGORIES) {
+      counts[category] = 0;
+      nodesByCategory[category] = [];
+    }
 
-function drawMachines() {
-  for (const machine of state.machines) {
-    const screen = worldToScreen(machine.x, machine.y);
+    return {
+      totalNodes: 0,
+      counts,
+      unknownNodeNames: [],
+      nodesByCategory
+    };
+  }
 
-    ctx.fillStyle = machine.color || "#2f81f7";
-    ctx.fillRect(
-      screen.x,
-      screen.y,
-      machine.width * state.camera.zoom,
-      machine.length * state.camera.zoom
+  function isSourceExtractorName(name) {
+    return SOURCE_EXTRACTOR_NAMES.has(normalizeName(name));
+  }
+
+  function isSourceResourceName(name) {
+    return SOURCE_RESOURCE_NODE_NAMES.has(normalizeName(name));
+  }
+
+  function safeArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function summarizeNodeParts(node) {
+    const rawParts = safeArray(node?.Parts);
+
+    const inputParts = [];
+    const outputParts = [];
+
+    for (const partEntry of rawParts) {
+      if (!partEntry || typeof partEntry !== "object") {
+        continue;
+      }
+
+      const name = partEntry.Name ?? partEntry.Part ?? partEntry.Item ?? "(unnamed part)";
+      const amount = partEntry.Amount ?? partEntry.Rate ?? partEntry.Value ?? partEntry.Count ?? null;
+      const io = normalizeName(partEntry.IO ?? partEntry.Direction ?? partEntry.Type);
+
+      const summarized = { name, amount };
+
+      if (io === "input" || io === "in") {
+        inputParts.push(summarized);
+      } else if (io === "output" || io === "out") {
+        outputParts.push(summarized);
+      } else {
+        // If direction is not provided, include in both lists only when explicitly flagged is unavailable.
+        // We keep these under output by default so they still appear in diagnostics.
+        outputParts.push(summarized);
+      }
+    }
+
+    return {
+      inputParts,
+      outputParts,
+      inputPartCount: inputParts.length,
+      outputPartCount: outputParts.length
+    };
+  }
+
+  function classifyNode(node, lookups) {
+    const nodeName = String(node?.Name ?? "").trim();
+    const normalizedNodeName = normalizeName(nodeName);
+
+    const recipe = lookups.recipesByName.get(normalizedNodeName);
+    if (recipe) {
+      const recipeMachineName = recipe?.Machine ?? node?.Machine ?? null;
+      if (isSourceExtractorName(recipeMachineName) || isSourceResourceName(nodeName)) {
+        return { category: CATEGORY_SKIPPED, matchedAs: "recipe (source/extractor)", ref: recipe };
+      }
+      return { category: CATEGORY_RECIPE, matchedAs: "recipe", ref: recipe };
+    }
+
+    const multiMachine = lookups.multiMachinesByName.get(normalizedNodeName);
+    if (multiMachine) {
+      if (isSourceExtractorName(multiMachine?.Name) || isSourceResourceName(nodeName)) {
+        return {
+          category: CATEGORY_SKIPPED,
+          matchedAs: "multi-machine (source/extractor)",
+          ref: multiMachine
+        };
+      }
+      return { category: CATEGORY_MULTI, matchedAs: "multi-machine", ref: multiMachine };
+    }
+
+    const machine = lookups.machinesByName.get(normalizedNodeName);
+    if (machine) {
+      if (isSourceExtractorName(machine?.Name) || isSourceResourceName(nodeName)) {
+        return { category: CATEGORY_SKIPPED, matchedAs: "machine (source/extractor)", ref: machine };
+      }
+      return { category: CATEGORY_MACHINE, matchedAs: "machine", ref: machine };
+    }
+
+    const part = lookups.partsByName.get(normalizedNodeName);
+    if (part) {
+      return { category: CATEGORY_SKIPPED, matchedAs: "part/source node", ref: part };
+    }
+
+    if (isSourceResourceName(nodeName)) {
+      return { category: CATEGORY_SKIPPED, matchedAs: "source/resource name", ref: null };
+    }
+
+    return { category: CATEGORY_UNKNOWN, matchedAs: "unknown", ref: null };
+  }
+
+  function createNodeDiagnosticEntry(index, node, classification) {
+    const nodeName = String(node?.Name ?? "(unnamed node)");
+    const partSummary = summarizeNodeParts(node);
+
+    return {
+      index,
+      name: nodeName,
+      matchedAs: classification.matchedAs,
+      machine: node?.Machine ?? classification.ref?.Machine ?? null,
+      max: node?.Max ?? classification.ref?.DefaultMax ?? null,
+      inputPartCount: partSummary.inputPartCount,
+      outputPartCount: partSummary.outputPartCount,
+      inputParts: partSummary.inputParts,
+      outputParts: partSummary.outputParts,
+      variants: safeArray(node?.Variants).length ? node.Variants : safeArray(classification.ref?.Machines),
+      capacities: safeArray(node?.Capacities).length
+        ? node.Capacities
+        : safeArray(classification.ref?.Capacities)
+    };
+  }
+
+  function runSfmdDiagnostic(sfmdJson, lookups) {
+    if (!sfmdJson || typeof sfmdJson !== "object") {
+      throw new Error("SFMD JSON root is invalid.");
+    }
+
+    if (!Array.isArray(sfmdJson.Data)) {
+      throw new Error("SFMD file is missing a valid Data array.");
+    }
+
+    const diagnostic = createEmptyDiagnostic();
+    diagnostic.totalNodes = sfmdJson.Data.length;
+
+    const unknownNamesSet = new Set();
+
+    sfmdJson.Data.forEach((node, index) => {
+      const classification = classifyNode(node, lookups);
+      const category = classification.category;
+
+      diagnostic.counts[category] += 1;
+
+      const entry = createNodeDiagnosticEntry(index, node, classification);
+      diagnostic.nodesByCategory[category].push(entry);
+
+      if (category === CATEGORY_UNKNOWN) {
+        unknownNamesSet.add(entry.name);
+      }
+    });
+
+    diagnostic.unknownNodeNames = [...unknownNamesSet].sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" })
     );
-  }
-}
 
-function draw() {
-  drawBackground();
-  drawGrid();
-  drawOriginMarker();
-  drawMachines();
-
-  if (state.machines.length === 0) {
-    drawEmptyStateMessage();
-  }
-}
-
-function resetLayout() {
-  state.machines = [];
-  centerCameraOnOrigin();
-  setStatus("New blank layout created.");
-}
-
-function handleImportClick() {
-  const file = factoryFileInput.files?.[0];
-
-  if (!file) {
-    setStatus("Choose a .sfmd or .json file first.");
-    return;
+    return diagnostic;
   }
 
-  setStatus(`Import selected: ${file.name}. Import parser not wired yet.`);
-}
+  function setSummaryHtml(html) {
+    const summaryEl = byId("sfmdDiagnosticSummary");
+    if (summaryEl) {
+      summaryEl.innerHTML = html;
+    }
+  }
 
-function init() {
-  state.appReady = true;
+  function setOutputHtml(html) {
+    const outputEl = byId("sfmdDiagnosticOutput");
+    if (outputEl) {
+      outputEl.innerHTML = html;
+    }
+  }
 
-  resizeCanvas();
-  centerCameraOnOrigin();
+  function renderDiagnostic(diagnostic) {
+    const summaryRows = [
+      `<div><strong>Total nodes:</strong> ${escapeHtml(diagnostic.totalNodes)}</div>`,
+      ...CATEGORIES.map((category) =>
+        `<div><strong>${escapeHtml(category)}:</strong> ${escapeHtml(diagnostic.counts[category])}</div>`
+      ),
+      `<div><strong>Unknown node names:</strong> ${escapeHtml(diagnostic.unknownNodeNames.length)}</div>`
+    ];
 
-  newLayoutBtn.addEventListener("click", resetLayout);
-  fitViewBtn.addEventListener("click", centerCameraOnOrigin);
-  importFactoryBtn.addEventListener("click", handleImportClick);
+    setSummaryHtml(summaryRows.join(""));
 
-  window.addEventListener("resize", resizeCanvas);
+    const jsonText = JSON.stringify(diagnostic, null, 2);
+    setOutputHtml(escapeHtml(jsonText));
 
-  setStatus("Ready. Blank V2 shell loaded.");
-}
+    console.log("SFMD diagnostic result:", diagnostic);
+  }
 
-init();
+  function renderError(message) {
+    const safeMessage = escapeHtml(message);
+    setSummaryHtml(`<div><strong>Error:</strong> ${safeMessage}</div>`);
+    setOutputHtml(safeMessage);
+    console.error("SFMD diagnostic error:", message);
+  }
+
+  function validateFileSelection(file) {
+    if (!file) {
+      throw new Error("No file selected. Please choose a .sfmd or .json file.");
+    }
+
+    const fileName = String(file.name || "");
+    const lower = fileName.toLowerCase();
+    if (!lower.endsWith(".sfmd") && !lower.endsWith(".json")) {
+      throw new Error("Unsupported file type. Please select a .sfmd or .json file.");
+    }
+  }
+
+  async function parseUploadedSfmd(file) {
+    validateFileSelection(file);
+
+    const text = await file.text();
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      throw new Error(`Invalid JSON in uploaded file: ${error.message}`);
+    }
+  }
+
+  async function handleRunDiagnosticClick() {
+    try {
+      if (!gameDataLookups) {
+        throw new Error("Game data is not loaded yet. Please wait and try again.");
+      }
+
+      const fileInputEl = byId("importFactoryFile", "factoryFileInput");
+      const file = fileInputEl?.files?.[0];
+      const sfmdJson = await parseUploadedSfmd(file);
+      const diagnostic = runSfmdDiagnostic(sfmdJson, gameDataLookups);
+
+      renderDiagnostic(diagnostic);
+    } catch (error) {
+      renderError(error?.message ?? String(error));
+    }
+  }
+
+  function wireUi() {
+    const runBtn = byId("runSfmdDiagnosticBtn", "importFactoryBtn");
+
+    if (runBtn) {
+      runBtn.addEventListener("click", handleRunDiagnosticClick);
+    } else {
+      console.warn(
+        "Missing #runSfmdDiagnosticBtn (or fallback #importFactoryBtn). SFMD diagnostic trigger is not wired."
+      );
+    }
+
+    const fileInputEl = byId("importFactoryFile", "factoryFileInput");
+    if (!fileInputEl) {
+      console.warn(
+        "Missing #importFactoryFile (or fallback #factoryFileInput). File uploads will not be available."
+      );
+    }
+
+    if (!byId("sfmdDiagnosticSummary")) {
+      console.warn("Missing #sfmdDiagnosticSummary. Summary output will only be logged to console.");
+    }
+
+    if (!byId("sfmdDiagnosticOutput")) {
+      console.warn("Missing #sfmdDiagnosticOutput. Detailed output will only be logged to console.");
+    }
+  }
+
+  async function init() {
+    wireUi();
+
+    try {
+      gameDataLookups = await loadGameDataLookups();
+      setSummaryHtml("<div>Game data loaded. Ready to run SFMD diagnostic.</div>");
+    } catch (error) {
+      renderError(error?.message ?? "Failed to load data/game_data.json.");
+    }
+  }
+
+  init();
+})();
