@@ -247,73 +247,36 @@ function solveFactory(sfmd, gameData) {
 }
 
 function computeNodeDepths(nodes) {
-  const memo = new Map();
-  const visiting = new Set();
+  const depths = new Array(nodes.length).fill(0);
+  const visited = new Array(nodes.length).fill(false);
 
-  function getUpstreamNodeIndexes(nodeState) {
-    const inputs = nodeState?.node?.Inputs || {};
-    const upstreamIndexes = [];
+  function getDepth(i) {
+    if (visited[i]) return depths[i];
+    visited[i] = true;
 
-    for (const sources of Object.values(inputs)) {
-      if (!Array.isArray(sources)) continue;
+    const node = nodes[i];
+    if (!node.recipe) return 0;
 
-      for (const source of sources) {
-        if (typeof source === "number") {
-          upstreamIndexes.push(source);
-          continue;
-        }
+    let maxDepth = 0;
 
-        if (Array.isArray(source) && typeof source[0] === "number") {
-          upstreamIndexes.push(source[0]);
-          continue;
-        }
+    for (const inputs of Object.values(node.node.Inputs || {})) {
+      for (const upstreamIndex of inputs) {
+        maxDepth = Math.max(maxDepth, getDepth(upstreamIndex) + 1);
       }
     }
 
-    return [...new Set(upstreamIndexes)];
+    depths[i] = maxDepth;
+    return maxDepth;
   }
 
-  function getDepth(nodeIndex) {
-    if (memo.has(nodeIndex)) {
-      return memo.get(nodeIndex);
-    }
-
-    const nodeState = nodes[nodeIndex];
-
-    if (!nodeState) {
-      console.warn("Missing node in computeNodeDepths:", nodeIndex);
-      return 0;
-    }
-
-    if (visiting.has(nodeIndex)) {
-      console.warn("Cycle detected in computeNodeDepths:", nodeIndex, nodeState);
-      return 0;
-    }
-
-    visiting.add(nodeIndex);
-
-    const upstreamIndexes = getUpstreamNodeIndexes(nodeState)
-      .filter(index => index >= 0 && index < nodes.length);
-
-    const depth = upstreamIndexes.length
-      ? 1 + Math.max(...upstreamIndexes.map(getDepth))
-      : 0;
-
-    visiting.delete(nodeIndex);
-    memo.set(nodeIndex, depth);
-
-    return depth;
-  }
-
-  return nodes.map((nodeState, index) => getDepth(index));
+  nodes.forEach((_, i) => getDepth(i));
+  return depths;
 }
 
 function buildRecipeSummaryFromSfmd(sfmd, gameData, gap = 1) {
   const solvedNodes = solveFactory(sfmd, gameData);
   const grouped = new Map();
-  console.log("solvedNodes", solvedNodes);
-  console.log("first solved node", solvedNodes[0]);
-  const nodeDepth = depths[nodeState.index] || 0;
+  const depths = computeNodeDepths(solvedNodes);
   const EXCLUDED_MACHINES = ["Miner", "Water Extractor", "Resource Well Extractor", "Oil Extractor"];
 
   for (const nodeState of solvedNodes) {

@@ -3,75 +3,172 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Satisfactory Floor Planner</title>
 
-  <title>Satisfactory Floor Planner V2</title>
+  <!-- Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-T5HRJ5LG8W"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    // debug_mode lets you see events instantly in GA DebugView
+    gtag('config', 'G-T5HRJ5LG8W', { debug_mode: true });
+  </script>
 
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="app">
     <aside id="sidebar">
-      <header class="sidebar-header">
-        <h1>Satisfactory Floor Planner V2</h1>
-        <p>Diagnostic-only phase for SFMD validation.</p>
-      </header>
+      <h1>Satisfactory Floor Planner</h1>
+      <p class="subhead">Rough 2D factory layout planning tool.</p>
 
       <section class="panel">
-        <h2>Project</h2>
-        <button id="newLayoutBtn" type="button">New Layout</button>
+        <h2>View</h2>
+        <div class="machine-picker">
+          <button id="plannerViewBtn" type="button">Planner View</button>
+          <button id="summaryViewBtn" type="button">Summary View</button>
+        </div>
       </section>
 
       <section class="panel">
-        <h2>Import</h2>
+        <h2>Recipe Palette</h2>
+        <div class="machine-picker">
+          <input
+            id="recipeSearch"
+            type="text"
+            placeholder="Search recipes..."
+            autocomplete="off"
+          />
+          <select id="machineSelect"></select>
+          <button id="addMachineBtn" type="button">Add Machine</button>
+        </div>
+      </section>
 
-        <!-- Primary IDs expected by the diagnostic app.js -->
-        <input id="importFactoryFile" type="file" accept=".sfmd,.json" />
-        <button id="runSfmdDiagnosticBtn" type="button">Run SFMD Diagnostic</button>
-
-        <!-- Optional legacy-compatible fallback IDs (hidden) -->
-        <!-- Keep if you want older code paths/tools to still find these IDs -->
-        <input
-          id="factoryFileInput"
-          type="file"
-          accept=".sfmd,.json"
-          style="display:none"
-          aria-hidden="true"
-          tabindex="-1"
-        />
-        <button
-          id="importFactoryBtn"
-          type="button"
-          style="display:none"
-          aria-hidden="true"
-          tabindex="-1"
-        >
-          Import Factory
-        </button>
-
-        <div id="sfmdDiagnosticSummary" class="diagnostic-summary"></div>
-        <pre id="sfmdDiagnosticOutput" class="diagnostic-output"></pre>
-
-        <p class="hint">
-          Diagnostic-only mode: upload an SFMD file, classify nodes, and review unknowns.
+      <section class="panel">
+        <h2>Import / Export</h2>
+        <div class="machine-picker">
+          <input id="importFactoryFile" type="file" accept=".sfmd,.json" />
+          <button id="importFactoryBtn" type="button">Import File</button>
+          <button id="exportPlannerBtn" type="button">Export Planner JSON</button>
+          <button id="exportLayoutPngBtn" type="button">Export Layout PNG</button>
+        </div>
+        <p class="subhead" style="margin-top: 12px; margin-bottom: 0;">
+          Import either a parser JSON file or a Satisfactory Modeler .sfmd save file.
         </p>
       </section>
 
       <section class="panel">
-        <h2>View</h2>
-        <button id="fitViewBtn" type="button">Fit View</button>
+        <h2>Controls</h2>
+        <ul>
+          <li>Mouse wheel: Zoom</li>
+          <li>Middle mouse drag: Pan</li>
+          <li>Left drag: Move machine or selected machines</li>
+          <li>R: Rotate selected machine or selected machines</li>
+          <li>Delete / Backspace: Remove selected machine</li>
+        </ul>
       </section>
 
       <section class="panel">
-        <h2>Status</h2>
-        <div id="statusText">Ready.</div>
+        <h2>Selected</h2>
+        <div id="selectedInfo">None</div>
       </section>
     </aside>
 
     <main id="workspace">
       <canvas id="plannerCanvas"></canvas>
+
+      <div id="summaryView">
+        <section class="panel">
+          <h2>Summary</h2>
+          <div id="summaryCards" class="summary-cards"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Recipe Blocks</h2>
+          <div class="table-wrap">
+            <table id="summaryTable">
+              <thead>
+                <tr>
+                  <th>Recipe</th>
+                  <th>Machine</th>
+                  <th>Exact Machines</th>
+                  <th>Rounded</th>
+                  <th>Per-Machine Footprint</th>
+                  <th>Block Layout</th>
+                  <th>Estimated Block Size</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Layout Preview</h2>
+          <p class="subhead">One rectangle = one grouped machine block.</p>
+          <canvas id="summaryPreviewCanvas" width="1400" height="2000"></canvas>
+        </section>
+      </div>
     </main>
   </div>
 
   <script src="app.js"></script>
+
+  <script>
+    const exportPlannerBtn = document.getElementById("exportPlannerBtn");
+    const exportLayoutPngBtn = document.getElementById("exportLayoutPngBtn");
+
+    if (exportPlannerBtn) {
+      exportPlannerBtn.addEventListener("click", () => {
+
+        if (typeof gtag === "function") {
+          console.log("GA event fired: export_planner_json");
+          gtag("event", "export_planner_json");
+        } else {
+          console.error("GA NOT LOADED");
+        }
+
+        if (!window.getPlannerState) {
+          console.error("getPlannerState not found");
+          return;
+        }
+
+        const data = window.getPlannerState();
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], {
+          type: "application/json"
+        });
+
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "planner_layout.json";
+        a.click();
+
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    if (exportLayoutPngBtn) {
+      exportLayoutPngBtn.addEventListener("click", () => {
+
+        if (typeof gtag === "function") {
+          console.log("GA event fired: export_layout_png");
+          gtag("event", "export_layout_png");
+        } else {
+          console.error("GA NOT LOADED");
+        }
+
+        if (typeof exportLayoutPng === "function") {
+          exportLayoutPng();
+        } else {
+          console.error("exportLayoutPng function not found in app.js");
+        }
+      });
+    }
+  </script>
 </body>
 </html>
