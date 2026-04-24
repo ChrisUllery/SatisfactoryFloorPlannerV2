@@ -48,6 +48,48 @@ const MACHINE_FOOTPRINTS = {
   "Converter": { width: 16, length: 16 },
   "Space Elevator": { width: 40, length: 40 }
 };
+function logPlannerEvent(eventName, params = {}) {
+  console.log("Planner event:", eventName, params);
+
+  if (typeof gtag === "function") {
+    gtag("event", eventName, {
+      app_name: "satisfactory_floor_planner_v2",
+      ...params
+    });
+  }
+}
+
+function logPlannerError(error, context = {}) {
+  const message = error?.message || String(error);
+  const stack = error?.stack || "";
+
+  console.error("Planner error report:", {
+    message,
+    stack,
+    context
+  });
+
+  logPlannerEvent("planner_error", {
+    error_message: message.slice(0, 500),
+    error_stack: stack.slice(0, 1000),
+    error_context: JSON.stringify(context).slice(0, 1000)
+  });
+}
+
+window.addEventListener("error", event => {
+  logPlannerError(event.error || event.message, {
+    source: "window_error",
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno
+  });
+});
+
+window.addEventListener("unhandledrejection", event => {
+  logPlannerError(event.reason, {
+    source: "unhandled_promise_rejection"
+  });
+});
 
 async function loadGameData() {
   if (gameData) return gameData;
@@ -180,32 +222,80 @@ function buildNodeState(sfmd, recipeMap) {
     };
   });
 }
+function collectInputRefs(inputValue, refs = []) {
+  if (typeof inputValue === "number") {
+    refs.push(inputValue);
+    return refs;
+  }
+
+  if (!Array.isArray(inputValue)) {
+    return refs;
+  }
+
+  if (typeof inputValue[0] === "number") {
+    refs.push(inputValue[0]);
+    return refs;
+  }
+
+  for (const item of inputValue) {
+    collectInputRefs(item, refs);
+  }
+
+  return refs;
+}
+
+function getInputRefsForPart(node, partName, nodeCount) {
+  const inputs = node?.Inputs;
+  if (!inputs) return [];
+
+  let refs = [];
+
+  if (Array.isArray(inputs)) {
+    refs = collectInputRefs(inputs);
+  } else {
+    refs = collectInputRefs(inputs[partName] || []);
+  }
+
+  return [...new Set(refs)]
+    .filter(index => Number.isInteger(index))
+    .filter(index => index >= 0 && index < nodeCount);
+}
 
 function addDemandToNode(nodes, nodeIndex, partName, ppm) {
-  const state = nodes[nodeIndex];
-  if (!state || !state.recipe) return;
+  const nodeState = nodes[nodeIndex];
 
-  state.outputDemands[partName] = (state.outputDemands[partName] || 0) + ppm;
-
-  const outputRate = state.outputsPerMinute[partName];
-  if (!outputRate || outputRate <= 0) {
-    state.warnings.push(`No output rate found for part "${partName}"`);
+  if (!nodeState || !nodeState.recipe) {
     return;
   }
 
-  const requiredMachineCount = state.outputDemands[partName] / outputRate;
-  const previousMachineCount = state.machineCountExact;
+  nodeState.outputDemands[partName] =
+    (nodeState.outputDemands[partName] || 0) + ppm;
+
+  const outputRate = nodeState.outputsPerMinute[partName];
+
+  if (!outputRate || outputRate <= 0) {
+    nodeState.warnings.push(`No output rate found for part "${partName}"`);
+    return;
+  }
+
+  const requiredMachineCount = nodeState.outputDemands[partName] / outputRate;
+  const previousMachineCount = nodeState.machineCountExact;
 
   if (requiredMachineCount <= previousMachineCount + 1e-9) {
     return;
   }
 
   const deltaMachines = requiredMachineCount - previousMachineCount;
-  state.machineCountExact = requiredMachineCount;
+  nodeState.machineCountExact = requiredMachineCount;
 
-  for (const [inputPart, inputRatePerMachine] of Object.entries(state.inputsPerMinute)) {
+  for (const [inputPart, inputRatePerMachine] of Object.entries(nodeState.inputsPerMinute)) {
     const totalAdditionalInput = inputRatePerMachine * deltaMachines;
-    const upstreamList = state.node.Inputs?.[inputPart] || [];
+
+    const upstreamList = getInputRefsForPart(
+      nodeState.node,
+      inputPart,
+      nodes.length
+    );
 
     if (upstreamList.length === 0) {
       continue;
@@ -223,61 +313,127 @@ function solveFactory(sfmd, gameData) {
   const { recipeMap } = getRecipeMaps(gameData);
   const nodes = buildNodeState(sfmd, recipeMap);
 
-  for (const state of nodes) {
-    const maxMachines = parseFraction(state.node.Max);
-    if (maxMachines > 0 && state.recipe) {
-      state.machineCountExact = maxMachines;
+  for (const nodeState of nodes) {
+    const maxMachines = parseFraction(nodeState.node?.Max);
 
-      for (const [inputPart, inputRatePerMachine] of Object.entries(state.inputsPerMinute)) {
-        const totalInputPpm = inputRatePerMachine * maxMachines;
-        const upstreamList = state.node.Inputs?.[inputPart] || [];
+    if (maxMachines <= 0 || !nodeState.recipe) {
+      continue;
+    }
 
-        if (upstreamList.length === 0) continue;
+    nodeState.machineCountExact = maxMachines;
 
-        const splitDemand = totalInputPpm / upstreamList.length;
+    for (const [inputPart, inputRatePerMachine] of Object.entries(nodeState.inputsPerMinute)) {
+      const totalInputPpm = inputRatePerMachine * maxMachines;
+      const upstreamList = getInputRefsForPart(
+        nodeState.node,
+        inputPart,
+        nodes.length
+      );
 
-        for (const upstreamIndex of upstreamList) {
-          addDemandToNode(nodes, upstreamIndex, inputPart, splitDemand);
-        }
+      if (upstreamList.length === 0) {
+        continue;
+      }
+
+      const splitDemand = totalInputPpm / upstreamList.length;
+
+      for (const upstreamIndex of upstreamList) {
+        addDemandToNode(nodes, upstreamIndex, inputPart, splitDemand);
       }
     }
   }
 
   return nodes;
 }
-
 function computeNodeDepths(nodes) {
-  const depths = new Array(nodes.length).fill(0);
-  const visited = new Array(nodes.length).fill(false);
+  const memo = new Map();
+  const visiting = new Set();
 
-  function getDepth(i) {
-    if (visited[i]) return depths[i];
-    visited[i] = true;
+  function collectInputRefs(inputValue, refs = []) {
+    if (typeof inputValue === "number") {
+      refs.push(inputValue);
+      return refs;
+    }
 
-    const node = nodes[i];
-    if (!node.recipe) return 0;
+    if (!Array.isArray(inputValue)) {
+      return refs;
+    }
 
-    let maxDepth = 0;
+    // Handles [4, 0] or [10, "Empty Fluid Tank"]
+    if (typeof inputValue[0] === "number") {
+      refs.push(inputValue[0]);
+      return refs;
+    }
 
-    for (const inputs of Object.values(node.node.Inputs || {})) {
-      for (const upstreamIndex of inputs) {
-        maxDepth = Math.max(maxDepth, getDepth(upstreamIndex) + 1);
+    // Handles nested forms like [[[6, "Water"]], [[5, "Water"]]]
+    for (const item of inputValue) {
+      collectInputRefs(item, refs);
+    }
+
+    return refs;
+  }
+
+  function getUpstreamNodeIndexes(nodeState) {
+    const inputs = nodeState?.node?.Inputs;
+    if (!inputs) return [];
+
+    const refs = [];
+
+    if (Array.isArray(inputs)) {
+      collectInputRefs(inputs, refs);
+    } else {
+      for (const value of Object.values(inputs)) {
+        collectInputRefs(value, refs);
       }
     }
 
-    depths[i] = maxDepth;
-    return maxDepth;
+    return [...new Set(refs)]
+      .filter(index => Number.isInteger(index))
+      .filter(index => index >= 0 && index < nodes.length);
   }
 
-  nodes.forEach((_, i) => getDepth(i));
-  return depths;
+  function getDepth(nodeIndex) {
+    if (memo.has(nodeIndex)) {
+      return memo.get(nodeIndex);
+    }
+
+    const nodeState = nodes[nodeIndex];
+    if (!nodeState) {
+      return 0;
+    }
+
+    if (visiting.has(nodeIndex)) {
+      console.warn("Cycle detected in computeNodeDepths:", nodeIndex, nodeState);
+      return 0;
+    }
+
+    visiting.add(nodeIndex);
+
+    const upstreamIndexes = getUpstreamNodeIndexes(nodeState);
+
+    const depth = upstreamIndexes.length
+      ? 1 + Math.max(...upstreamIndexes.map(getDepth))
+      : 0;
+
+    visiting.delete(nodeIndex);
+    memo.set(nodeIndex, depth);
+
+    return depth;
+  }
+
+  return nodes.map((_, index) => getDepth(index));
 }
 
 function buildRecipeSummaryFromSfmd(sfmd, gameData, gap = 1) {
   const solvedNodes = solveFactory(sfmd, gameData);
   const grouped = new Map();
   const depths = computeNodeDepths(solvedNodes);
-  const EXCLUDED_MACHINES = ["Miner", "Water Extractor", "Resource Well Extractor", "Oil Extractor"];
+
+  const EXCLUDED_MACHINES = [
+    "Miner",
+    "Water Extractor",
+    "Resource Well Extractor",
+    "Oil Extractor"
+  ];
 
   for (const nodeState of solvedNodes) {
     if (!nodeState.recipe || nodeState.machineCountExact <= 0) continue;
@@ -339,8 +495,21 @@ function buildRecipeSummaryFromSfmd(sfmd, gameData, gap = 1) {
 }
 
 async function loadMachineCatalog() {
-  const response = await fetch("data/machines.json");
-  machineCatalog = await response.json();
+  const data = await loadGameData();
+
+  machineCatalog = {};
+
+  for (const machine of data.Machines || []) {
+    const footprint = MACHINE_FOOTPRINTS[machine.Name];
+
+    if (!footprint) continue;
+
+    machineCatalog[machine.Name] = {
+      width: footprint.width,
+      length: footprint.length,
+      color: "#4f9cff"
+    };
+  }
 }
 
 const state = {
@@ -506,28 +675,28 @@ function getMachineBufferRects(
   };
 
   // Base rule:
-  // 0°   = input top,    output bottom
-  // 90°  = input right,  output left
-  // 180° = input bottom, output top
-  // 270° = input left,   output right
+  // 0°   = input left,   output right
+  // 90°  = input top,    output bottom
+  // 180° = input right,  output left
+  // 270° = input bottom, output top
 
   if (rotation === 0) {
-    return { input: topRect, output: bottomRect };
-  }
-
-  if (rotation === 90) {
-    return { input: rightRect, output: leftRect };
-  }
-
-  if (rotation === 180) {
-    return { input: bottomRect, output: topRect };
-  }
-
-  if (rotation === 270) {
     return { input: leftRect, output: rightRect };
   }
 
-  return { input: topRect, output: bottomRect };
+  if (rotation === 90) {
+    return { input: topRect, output: bottomRect };
+  }
+
+  if (rotation === 180) {
+    return { input: rightRect, output: leftRect };
+  }
+
+  if (rotation === 270) {
+    return { input: bottomRect, output: topRect };
+  }
+
+  return { input: leftRect, output: rightRect };
 }
 
 function getMachineOccupiedRects(
@@ -1428,7 +1597,11 @@ importFactoryBtn.addEventListener("click", async () => {
       gtag("event", "import_failure");
     }
 
-    console.error(error);
+    logPlannerError(error, {
+    source: "importFactoryBtn",
+    fileName: file?.name || null,
+    fileType: file?.name?.toLowerCase().endsWith(".sfmd") ? "sfmd" : "json"
+    });
     alert(error.message);
   }
 });
