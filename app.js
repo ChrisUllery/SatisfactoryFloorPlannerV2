@@ -48,6 +48,15 @@
   ]);
 
   let gameDataLookups = null;
+  let lastDiagnostic = null;
+
+  const CANVAS_COLORS_BY_CATEGORY = {
+    [CATEGORY_RECIPE]: "#2f81f7",
+    [CATEGORY_MULTI]: "#22c55e",
+    [CATEGORY_MACHINE]: "#a855f7",
+    [CATEGORY_SKIPPED]: "#f59e0b",
+    [CATEGORY_UNKNOWN]: "#ef4444"
+  };
 
   function byId(...ids) {
     for (const id of ids) {
@@ -301,6 +310,118 @@
     console.log("SFMD diagnostic result:", diagnostic);
   }
 
+  function getCanvasContext() {
+    const canvas = byId("plannerCanvas");
+    if (!canvas || typeof canvas.getContext !== "function") {
+      return null;
+    }
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return null;
+    }
+
+    return { canvas, ctx };
+  }
+
+  function resizeCanvasToDisplaySize(canvas, ctx) {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+
+    const width = Math.max(1, Math.floor(rect.width * dpr));
+    const height = Math.max(1, Math.floor(rect.height * dpr));
+
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { width: rect.width, height: rect.height };
+  }
+
+  function clearCanvas(ctx, width, height) {
+    ctx.fillStyle = "#080b10";
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  function renderCanvasPlaceholder(message) {
+    const canvasData = getCanvasContext();
+    if (!canvasData) {
+      return;
+    }
+
+    const { canvas, ctx } = canvasData;
+    const { width, height } = resizeCanvasToDisplaySize(canvas, ctx);
+    clearCanvas(ctx, width, height);
+
+    ctx.fillStyle = "#9da7b3";
+    ctx.font = "16px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(message, width / 2, height / 2);
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+  }
+
+  function collectRenderableNodes(diagnostic) {
+    const nodes = [];
+    for (const category of CATEGORIES) {
+      for (const node of diagnostic.nodesByCategory[category]) {
+        nodes.push({ ...node, category });
+      }
+    }
+    return nodes;
+  }
+
+  function renderDiagnosticCanvas(diagnostic) {
+    const canvasData = getCanvasContext();
+    if (!canvasData) {
+      return;
+    }
+
+    const { canvas, ctx } = canvasData;
+    const { width, height } = resizeCanvasToDisplaySize(canvas, ctx);
+    clearCanvas(ctx, width, height);
+
+    const allNodes = collectRenderableNodes(diagnostic);
+    if (allNodes.length === 0) {
+      renderCanvasPlaceholder("No diagnostic nodes to draw.");
+      return;
+    }
+
+    const cardWidth = 180;
+    const cardHeight = 56;
+    const margin = 18;
+    const gap = 12;
+    const columns = Math.max(1, Math.floor((width - margin * 2 + gap) / (cardWidth + gap)));
+
+    ctx.font = "12px Arial";
+
+    allNodes.forEach((node, index) => {
+      const col = index % columns;
+      const row = Math.floor(index / columns);
+      const x = margin + col * (cardWidth + gap);
+      const y = margin + row * (cardHeight + gap);
+
+      if (y + cardHeight > height - margin) {
+        return;
+      }
+
+      ctx.fillStyle = CANVAS_COLORS_BY_CATEGORY[node.category] ?? "#64748b";
+      ctx.fillRect(x, y, cardWidth, cardHeight);
+
+      ctx.strokeStyle = "#0b1220";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, cardWidth, cardHeight);
+
+      ctx.fillStyle = "#e6edf3";
+      ctx.fillText(`${node.index}. ${node.name}`, x + 8, y + 20);
+      ctx.fillStyle = "#cbd5e1";
+      ctx.fillText(node.category, x + 8, y + 38);
+    });
+  }
+
   function renderError(message) {
     const safeMessage = escapeHtml(message);
     setSummaryHtml(`<div><strong>Error:</strong> ${safeMessage}</div>`);
@@ -341,10 +462,13 @@
       const file = fileInputEl?.files?.[0];
       const sfmdJson = await parseUploadedSfmd(file);
       const diagnostic = runSfmdDiagnostic(sfmdJson, gameDataLookups);
+      lastDiagnostic = diagnostic;
 
       renderDiagnostic(diagnostic);
+      renderDiagnosticCanvas(diagnostic);
     } catch (error) {
       renderError(error?.message ?? String(error));
+      renderCanvasPlaceholder("SFMD diagnostic failed. See summary for details.");
     }
   }
 
@@ -377,6 +501,15 @@
 
   async function init() {
     wireUi();
+    renderCanvasPlaceholder("Run SFMD Diagnostic to preview recognized nodes.");
+
+    window.addEventListener("resize", () => {
+      if (lastDiagnostic) {
+        renderDiagnosticCanvas(lastDiagnostic);
+      } else {
+        renderCanvasPlaceholder("Run SFMD Diagnostic to preview recognized nodes.");
+      }
+    });
 
     try {
       gameDataLookups = await loadGameDataLookups();
