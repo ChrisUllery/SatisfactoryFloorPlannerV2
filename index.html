@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>Satisfactory Floor Planner V2</title>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <header class="sidebar-header">
+        <h1>Satisfactory Floor Planner V2</h1>
+        <p>Clean rebuild. No imported factory loaded yet.</p>
+      </header>
+
+      <section class="panel">
+        <h2>Project</h2>
+        <button id="newLayoutBtn" type="button">New Layout</button>
+      </section>
+
+      <section class="panel">
+        <h2>Import</h2>
+        <input id="factoryFileInput" type="file" accept=".sfmd,.json" />
+        <button id="importFactoryBtn" type="button">Import Factory</button>
+        <p class="hint">
+          Import handling will be added later. For now this just confirms the app is wired.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>View</h2>
+        <button id="fitViewBtn" type="button">Fit View</button>
+      </section>
+
+      <section class="panel">
+        <h2>Status</h2>
+        <div id="statusText">Ready.</div>
+      </section>
+    </aside>
+
+    <main id="workspace">
+      <canvas id="plannerCanvas"></canvas>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
